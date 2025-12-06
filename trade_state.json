@@ -1,0 +1,23 @@
+{
+    "scalp": {
+        "balance": 100.0,
+        "position": null,
+        "entry_price": 0,
+        "tp": 0,
+        "sl": 0
+    },
+    "day": {
+        "balance": 100.0,
+        "position": null,
+        "entry_price": 0,
+        "tp": 0,
+        "sl": 0
+    },
+    "swing": {
+        "balance": 100.0,
+        "position": null,
+        "entry_price": 0,
+        "tp": 0,
+        "sl": 0
+    }
+}
