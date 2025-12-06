@@ -1,12 +1,15 @@
-name: Hourly Bitcoin Scanner
+name: Hourly Bitcoin Bot
 
 on:
   schedule:
-    - cron: '0 * * * *'  # Runs at minute 0 of every hour
-  workflow_dispatch:      # Allows you to click "Run" manually to test it
+    - cron: '0 * * * *'  # Runs every hour
+  workflow_dispatch:
+
+permissions:
+  contents: write
 
 jobs:
-  run_scan:
+  run_bot:
     runs-on: ubuntu-latest
 
     steps:
@@ -18,12 +21,21 @@ jobs:
         with:
           python-version: '3.9'
 
-      - name: Install Dependencies
-        run: |
-          pip install requests numpy pandas scipy
+      - name: Install Libraries
+        run: pip install requests numpy pandas scipy
 
-      - name: Run Scanner Script
+      - name: Run Trading Bot
         env:
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: python main.py
+
+      - name: Save Trade State (Commit JSON)
+        run: |
+          git config --global user.name "BitcoinBot"
+          git config --global user.email "bot@github.com"
+          git pull
+          git add trade_state.json
+          # Only commit if the file actually changed
+          git diff-index --quiet HEAD || git commit -m "Update Trade Balance"
+          git push
