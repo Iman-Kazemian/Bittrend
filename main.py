@@ -8,14 +8,17 @@ import json
 from scipy.stats import t as student_t
 
 # ==========================================
-# 🔐 CONFIGURATION
+# 🔐 CONFIGURATION & LOGGING
 # ==========================================
 TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
 TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID")
 STATE_FILE = "trade_state.json"
+
+# Global string to accumulate the report for Telegram
 FULL_REPORT = ""
 
 def log(text):
+    """Prints to console AND adds to Telegram report"""
     global FULL_REPORT
     print(text)
     FULL_REPORT += text + "\n"
@@ -24,11 +27,12 @@ def log(text):
 # 💾 MEMORY ENGINE (Load/Save JSON)
 # ==========================================
 def load_state():
+    """Loads the balance and active positions from file"""
     if os.path.exists(STATE_FILE):
         with open(STATE_FILE, "r") as f:
             return json.load(f)
     else:
-        # Default Start: $100 for each strategy
+        # Initial Start: $100.00 for each strategy
         return {
             "scalp": {"balance": 100.0, "position": None, "entry_price": 0, "tp": 0, "sl": 0},
             "day":   {"balance": 100.0, "position": None, "entry_price": 0, "tp": 0, "sl": 0},
@@ -36,25 +40,28 @@ def load_state():
         }
 
 def save_state(state):
+    """Saves the current state back to JSON"""
     with open(STATE_FILE, "w") as f:
         json.dump(state, f, indent=4)
 
 # ==========================================
-# 📡 DATA ENGINE
+# 📡 DATA ENGINE (US-Friendly / Kraken)
 # ==========================================
 def get_kraken_data(interval_mins):
+    """Fetches Candles and Order Book Imbalance"""
     try:
+        # 1. Get OHLC Candles
         url_ohlc = "https://api.kraken.com/0/public/OHLC"
         params = {'pair': 'XBTUSD', 'interval': interval_mins}
-        headers = {'User-Agent': 'Mozilla/5.0'}
+        headers = {'User-Agent': 'Mozilla/5.0'} # Pretend to be a browser
         
         resp_ohlc = requests.get(url_ohlc, params=params, headers=headers, timeout=10).json()
-        if resp_ohlc.get('error'): return None, None, None
+        if resp_ohlc.get('error'): return None, None
 
         pair = list(resp_ohlc['result'].keys())[0]
         candles = resp_ohlc['result'][pair]
         
-        # Parse DataFrame
+        # Parse into DataFrame
         closes = [float(c[4]) for c in candles]
         highs = [float(c[2]) for c in candles]
         lows = [float(c[3]) for c in candles]
@@ -62,7 +69,7 @@ def get_kraken_data(interval_mins):
         
         df = pd.DataFrame({'Open': opens, 'High': highs, 'Low': lows, 'Close': closes})
 
-        # Order Book Imbalance
+        # 2. Get Order Book (Imbalance)
         url_book = "https://api.kraken.com/0/public/Depth"
         resp_book = requests.get(url_book, params={'pair': 'XBTUSD', 'count': 50}, headers=headers, timeout=10).json()
         bids = np.array(resp_book['result'][pair]['bids'], dtype=float)
@@ -72,15 +79,16 @@ def get_kraken_data(interval_mins):
         ask_vol = np.sum(asks[:, 1])
         imbalance = bid_vol / (bid_vol + ask_vol)
 
-        # Get the LAST COMPLETED CANDLE (Index -2) to check if we hit TP/SL during the hour
-        last_candle_high = highs[-2]
-        last_candle_low = lows[-2]
+        return df, imbalance
+    except Exception as e:
+        print(f"Data Error: {e}")
+        return None, None
 
-        return df, imbalance, (last_candle_high, last_candle_low)
-    except:
-        return None, None, None
-
+# ==========================================
+# 🧮 MATH & INDICATOR ENGINE
+# ==========================================
 def calculate_parkinson_volatility(df, interval_mins):
+    """Smart Volatility using High/Low ranges (Best for Crypto)"""
     df['hl_log'] = np.log(df['High'] / df['Low']) ** 2
     variance = df['hl_log'].mean() / (4 * np.log(2))
     period_vol = np.sqrt(variance)
@@ -88,6 +96,7 @@ def calculate_parkinson_volatility(df, interval_mins):
     return period_vol * np.sqrt(periods_per_day)
 
 def calculate_adx(df, period=14):
+    """Calculates Trend Strength (ADX)"""
     df['tr0'] = abs(df['High'] - df['Low'])
     df['tr1'] = abs(df['High'] - df['Close'].shift(1))
     df['tr2'] = abs(df['Low'] - df['Close'].shift(1))
@@ -105,14 +114,15 @@ def calculate_adx(df, period=14):
     df['-DM_smooth'] = df['-DM'].rolling(period).mean()
     
     with np.errstate(divide='ignore', invalid='ignore'):
-        df['+DI'] = 100 * (df['+DM_s'] / df['TR_s']) if 'TR_s' in df else 100 * (df['+DM_smooth'] / df['TR_smooth'])
-        df['-DI'] = 100 * (df['-DM_s'] / df['TR_s']) if 'TR_s' in df else 100 * (df['-DM_smooth'] / df['TR_smooth'])
+        df['+DI'] = 100 * (df['+DM_smooth'] / df['TR_smooth'])
+        df['-DI'] = 100 * (df['-DM_smooth'] / df['TR_smooth'])
         df['DX'] = 100 * abs(df['+DI'] - df['-DI']) / (df['+DI'] + df['-DI'])
     
     df['ADX'] = df['DX'].rolling(period).mean()
     return df.iloc[-1]
 
 def calculate_fat_tail_probs(price, vol_daily, duration_days, tp_pct, sl_pct, drift_score):
+    """Calculates Probabilities using Student's t-Distribution (df=3)"""
     period_vol = vol_daily * math.sqrt(duration_days)
     df_crypto = 3 
     expected_mean = price * (1 + (drift_score * period_vol))
@@ -127,12 +137,11 @@ def calculate_fat_tail_probs(price, vol_daily, duration_days, tp_pct, sl_pct, dr
     return max(0, prob_long), max(0, prob_short), max(0, prob_stable)
 
 # ==========================================
-# 💸 PAPER TRADING LOGIC
+# 💸 PAPER TRADE ENGINE (Smart Replay)
 # ==========================================
-def manage_position(mode, state, current_price, last_high, last_low):
+def manage_position(mode, state, df, interval_mins):
     """
-    Checks if active trades hit TP or SL.
-    Returns the updated State string (e.g., "HOLD", "WIN", "LOSS")
+    Replays recent candles to check if TP/SL was hit inside the 1-hour gap.
     """
     pos = state[mode]
     if pos["position"] is None:
@@ -143,34 +152,46 @@ def manage_position(mode, state, current_price, last_high, last_low):
     sl_price = pos["sl"]
     balance = pos["balance"]
     
-    # 1. Check if Hit (Prioritize SL logic for safety)
-    # We check 'last_high' and 'last_low' to see if price wicked there during the hour
+    # How many candles fit in 1 hour? (The bot runs hourly)
+    # Scalp (5m) = 12 candles. Day (60m) = 1 candle.
+    candles_to_check = int(60 / interval_mins)
+    if candles_to_check < 1: candles_to_check = 1
     
-    pnl = 0
+    # Get the slice of history since the last run
+    history_window = df.iloc[-(candles_to_check + 1):-1]
+    
     result = None
     
-    if pos["position"] == "LONG":
-        if last_low <= sl_price:   # Stopped Out
-            result = "LOSS"
-            # Calculate % loss
-            pct_change = (sl_price - entry) / entry
-            balance = balance * (1 + pct_change)
-        elif last_high >= tp_price: # Take Profit
-            result = "WIN"
-            pct_change = (tp_price - entry) / entry
-            balance = balance * (1 + pct_change)
-            
-    elif pos["position"] == "SHORT":
-        if last_high >= sl_price:  # Stopped Out
-            result = "LOSS"
-            pct_change = (entry - sl_price) / entry
-            balance = balance * (1 + pct_change)
-        elif last_low <= tp_price: # Take Profit
-            result = "WIN"
-            pct_change = (entry - tp_price) / entry
-            balance = balance * (1 + pct_change)
+    # Replay Loop
+    for index, row in history_window.iterrows():
+        high = row['High']
+        low = row['Low']
+        
+        if pos["position"] == "LONG":
+            if low <= sl_price:   # Loss
+                result = "LOSS"
+                pct = (sl_price - entry) / entry
+                balance = balance * (1 + pct)
+                break
+            elif high >= tp_price: # Win
+                result = "WIN"
+                pct = (tp_price - entry) / entry
+                balance = balance * (1 + pct)
+                break 
 
-    # 2. Update State if trade ended
+        elif pos["position"] == "SHORT":
+            if high >= sl_price:  # Loss
+                result = "LOSS"
+                pct = (entry - sl_price) / entry
+                balance = balance * (1 + pct)
+                break
+            elif low <= tp_price: # Win
+                result = "WIN"
+                pct = (entry - tp_price) / entry
+                balance = balance * (1 + pct)
+                break
+
+    # Update State
     if result:
         pos["balance"] = balance
         pos["position"] = None
@@ -179,18 +200,20 @@ def manage_position(mode, state, current_price, last_high, last_low):
         pos["sl"] = 0
         return f"{result} (Bal: ${balance:.2f})"
     
-    # 3. If trade is still open, calculate floating PnL
+    # Floating PnL
+    current_price = df.iloc[-1]['Close']
     if pos["position"] == "LONG":
         floating_pnl = (current_price - entry) / entry * 100
     else:
         floating_pnl = (entry - current_price) / entry * 100
         
-    return f"HOLD (PnL: {floating_pnl:+.2f}%)"
+    return f"HOLD ({floating_pnl:+.2f}%)"
 
 # ==========================================
-# 🚀 MAIN LOOP
+# 🚀 MAIN STRATEGY LOOP
 # ==========================================
 def analyze_strategy(mode, state):
+    # 1. Define Parameters
     if mode == "scalp":
         title = "⚡ SCALP (1-4h)"
         interval = 5; duration = 0.1; tp=0.008; sl=0.004
@@ -201,9 +224,13 @@ def analyze_strategy(mode, state):
         title = "📅 DAY (24h)"
         interval = 60; duration = 1; tp=0.02; sl=0.008
 
-    df, imbalance, last_candles = get_kraken_data(interval)
-    if df is None: return
+    # 2. Get Data
+    df, imbalance = get_kraken_data(interval)
+    if df is None:
+        log(f"⚠️ Error fetching data for {mode}")
+        return
 
+    # 3. Indicators
     latest = calculate_adx(df)
     current_price = latest['Close']
     adx = latest['ADX']
@@ -211,69 +238,75 @@ def analyze_strategy(mode, state):
     
     daily_vol = calculate_parkinson_volatility(df, interval)
     
-    # Drift
+    # 4. Drift (Order Book + Trend)
     book_bias = (imbalance - 0.5) * 2 
     trend_bias = 0.5 if latest['+DI'] > latest['-DI'] else -0.5
     total_drift = (book_bias * 0.4) + (trend_bias * 0.6)
 
-    # Math
+    # 5. Math (Fat Tails)
     p_long, p_short, p_stable = calculate_fat_tail_probs(
         current_price, daily_vol, duration, tp, sl, total_drift
     )
 
-    # --- PAPER TRADE CHECK ---
-    trade_status = manage_position(mode, state, current_price, last_candles[0], last_candles[1])
+    # 6. Check Active Trades (Replay Engine)
+    trade_status = manage_position(mode, state, df, interval)
     
-    # --- REPORTING ---
+    # 7. Print Report
     log(f"\n" + "="*30)
     log(f" {title}")
     log(f" 💰 Balance: ${state[mode]['balance']:.2f}")
+    
     if state[mode]['position']:
         log(f" 🚩 Position: {state[mode]['position']} @ ${state[mode]['entry_price']:.0f}")
         log(f"    Status: {trade_status}")
     else:
         log(f" ⚪ Status: Cash")
+        
     log(f"-"*30)
+    log(f" 📊 ADX: {adx:.1f} | Buyers: {imbalance*100:.0f}%")
+    log(f" 🎲 L:{p_long:.0f}% | S:{p_short:.0f}% | Stable:{p_stable:.0f}%")
     
-    # Signal Logic
-    signal = "WAIT"
-    if state[mode]['position'] is None: # Only look for signals if we are flat
-        if adx < 20: signal = "WAIT (Dead Mkt)"
-        elif p_stable > 60: signal = "WAIT (Low Vol)"
+    # 8. Signal Logic (Entry)
+    if state[mode]['position'] is None:
+        signal = "WAIT"
+        
+        if adx < 20: signal = "WAIT (Dead)"
+        elif p_stable > 60: signal = "WAIT (Stable)"
         elif p_long > p_short and p_long > 45: signal = "LONG"
         elif p_short > p_long and p_short > 45: signal = "SHORT"
         
-        # EXECUTE NEW TRADE
+        # Execute Entry
         if signal == "LONG":
             state[mode]['position'] = "LONG"
             state[mode]['entry_price'] = current_price
             state[mode]['tp'] = current_price * (1 + tp)
             state[mode]['sl'] = current_price * (1 - sl)
-            log(f" ✅ OPENING LONG! Target: ${state[mode]['tp']:.0f}")
+            log(f" ✅ OPEN LONG! TP: ${state[mode]['tp']:.0f} (+{tp*100}%)")
         elif signal == "SHORT":
             state[mode]['position'] = "SHORT"
             state[mode]['entry_price'] = current_price
             state[mode]['tp'] = current_price * (1 - tp)
             state[mode]['sl'] = current_price * (1 + sl)
-            log(f" 🔻 OPENING SHORT! Target: ${state[mode]['tp']:.0f}")
-    
-    # Print Probs
-    log(f" 📊 Probs: L:{p_long:.0f}% S:{p_short:.0f}% Stable:{p_stable:.0f}%")
+            log(f" 🔻 OPEN SHORT! TP: ${state[mode]['tp']:.0f} (-{tp*100}%)")
+        else:
+            log(f" ✋ Action: {signal}")
 
 def send_to_telegram():
-    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID: return
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
+        print("❌ Telegram keys missing.")
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
     payload = {"chat_id": TELEGRAM_CHAT_ID, "text": FULL_REPORT}
     try: requests.post(url, json=payload)
-    except: pass
+    except Exception as e: print(f"Telegram Error: {e}")
 
 if __name__ == "__main__":
     current_state = load_state()
-    log("🤖 HOURLY PAPER TRADING REPORT 🤖")
+    log("🤖 INSTITUTIONAL BTC SCANNER 🤖")
     
     for s in ["scalp", "day", "swing"]:
         analyze_strategy(s, current_state)
-        time.sleep(1)
+        time.sleep(1) # Pause to respect API
     
     save_state(current_state)
     send_to_telegram()
