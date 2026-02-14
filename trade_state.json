@@ -1,10 +1,10 @@
 {
     "scalp": {
-        "balance": 107.275430648861,
-        "position": "SHORT",
-        "entry_price": 68861.3,
-        "tp": 68310.4096,
-        "sl": 69136.7452
+        "balance": 106.84632892626556,
+        "position": null,
+        "entry_price": 0,
+        "tp": 0,
+        "sl": 0
     },
     "day": {
         "balance": 86.23762166785342,
