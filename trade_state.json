@@ -1,17 +1,17 @@
 {
     "scalp": {
-        "balance": 108.53672527210871,
-        "position": "SHORT",
-        "entry_price": 65439.4,
-        "tp": 64915.8848,
-        "sl": 65701.1576
+        "balance": 108.10257837102026,
+        "position": null,
+        "entry_price": 0,
+        "tp": 0,
+        "sl": 0
     },
     "day": {
-        "balance": 81.08323594055872,
+        "balance": 82.7049006593699,
         "position": "SHORT",
-        "entry_price": 66472.6,
-        "tp": 65143.148,
-        "sl": 67004.38080000001
+        "entry_price": 65385.0,
+        "tp": 64077.299999999996,
+        "sl": 65908.08
     },
     "swing": {
         "balance": 100.0,
