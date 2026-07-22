@@ -14,10 +14,10 @@
         "sl": 0
     },
     "swing": {
-        "balance": 94.99999999999999,
-        "position": "SHORT",
-        "entry_price": 63191.2,
-        "tp": 56872.08,
-        "sl": 66350.76
+        "balance": 90.24999999999999,
+        "position": null,
+        "entry_price": 0,
+        "tp": 0,
+        "sl": 0
     }
 }
