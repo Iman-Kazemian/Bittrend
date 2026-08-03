@@ -7,11 +7,11 @@
         "sl": 0
     },
     "day": {
-        "balance": 74.15176775981794,
-        "position": "SHORT",
-        "entry_price": 62677.1,
-        "tp": 61423.558,
-        "sl": 63178.5168
+        "balance": 73.5585536177394,
+        "position": null,
+        "entry_price": 0,
+        "tp": 0,
+        "sl": 0
     },
     "swing": {
         "balance": 90.24999999999999,
